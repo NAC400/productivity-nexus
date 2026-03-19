@@ -1,10 +1,12 @@
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+const Groq = require('groq-sdk');
+
+const MODEL = 'llama-3.3-70b-versatile';
 
 function getClient() {
-  if (!process.env.GEMINI_API_KEY) {
-    throw new Error('GEMINI_API_KEY is not set in your .env file');
+  if (!process.env.GROQ_API_KEY) {
+    throw new Error('GROQ_API_KEY is not set in your .env file');
   }
-  return new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+  return new Groq({ apiKey: process.env.GROQ_API_KEY });
 }
 
 function pickDifficulty(skillRating) {
@@ -15,186 +17,180 @@ function pickDifficulty(skillRating) {
   return 'Bronze';
 }
 
-function extractJSON(text) {
-  // Strip markdown code fences if present
-  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-  if (fenced) return fenced[1].trim();
-  const jsonMatch = text.match(/\{[\s\S]*\}/);
-  if (jsonMatch) return jsonMatch[0];
-  return text;
+async function callJSON(systemPrompt, userPrompt) {
+  const client = getClient();
+  const res = await client.chat.completions.create({
+    model: MODEL,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userPrompt },
+    ],
+    response_format: { type: 'json_object' },
+    temperature: 0.7,
+    max_tokens: 1500,
+  });
+  return JSON.parse(res.choices[0].message.content);
 }
 
 async function generateTask(project, user, skillRating = 50, recentTasks = [], roadmapStep = null) {
-  const genAI = getClient();
-  const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
-
   const difficulty = pickDifficulty(skillRating);
-
-  const xpRewardMap = {
-    Bronze: 100,
-    Silver: 150,
-    Gold: 200,
-    Platinum: 275,
-    Diamond: 350,
-  };
-
+  const xpRewardMap = { Bronze: 100, Silver: 150, Gold: 200, Platinum: 275, Diamond: 350 };
   const recentTaskTitles = recentTasks.map((t) => `- ${t.title} (${t.status})`).join('\n');
 
   const roadmapContext = roadmapStep
-    ? `
-CURRENT ROADMAP STEP (you MUST base the task on this step):
-- Step Number: ${roadmapStep.stepNumber}
-- Step Title: ${roadmapStep.title}
-- Step Description: ${roadmapStep.description}
-- Expected Deliverable: ${roadmapStep.deliverable}
+    ? `CURRENT ROADMAP STEP (base the task on this):
+- Step ${roadmapStep.stepNumber}: ${roadmapStep.title}
+- Description: ${roadmapStep.description}
+- Deliverable: ${roadmapStep.deliverable}
 - Phase: ${roadmapStep.phase}
-- Estimated Minutes: ${roadmapStep.estimatedMinutes}
-
-The task title, description, and deliverable MUST directly correspond to this roadmap step.
-`
+- Est. minutes: ${roadmapStep.estimatedMinutes}`
     : '';
 
-  const prompt = `You are a quest designer for a gamified productivity app called Productivity Nexus. Your job is to generate focused, achievable writing tasks for a researcher.
+  const system = `You are a quest designer for a gamified productivity app called Productivity Nexus. Generate focused, achievable writing tasks for researchers and students. Always respond with valid JSON only.`;
 
-PROJECT INFORMATION:
+  const user_prompt = `Generate ONE specific, actionable writing task for this project.
+
+PROJECT:
 - Title: ${project.title}
 - Goal: ${project.goal || 'Not specified'}
 - Type: ${project.type}
-- Publication Venue: ${project.publication_venue || 'Not specified'}
+- Publication: ${project.publication_venue || 'Not specified'}
 - Deadline: ${project.deadline || 'Not specified'}
-- Hours per Day Available: ${project.working_hours_per_day}
-- Outline/Context: ${project.outline || 'None provided'}
+- Hours/day: ${project.working_hours_per_day}
+- Outline: ${project.outline || 'None provided'}
 
-USER INFORMATION:
-- Username: ${user.username}
-- Rank: ${user.rank}
-- Current XP: ${user.xp}
+USER: ${user.username} | Rank: ${user.rank} | XP: ${user.xp}
 
 RECENT TASKS:
-${recentTaskTitles || 'No recent tasks - this is their first task'}
+${recentTaskTitles || 'None yet — this is their first task'}
+
 ${roadmapContext}
-TASK DIFFICULTY: ${difficulty}
 
-Generate ONE specific, actionable writing task appropriate for this project and difficulty level.
-The task should be completable in 25-45 minutes and produce a concrete written deliverable.
-Also generate 4-5 specific, actionable hints tailored to this exact project and task.
+DIFFICULTY: ${difficulty}
 
-Respond ONLY with a valid JSON object (no markdown, no explanation):
+The task must be completable in 25-45 minutes and produce a concrete written deliverable.
+Generate 4-5 specific hints tailored to this exact project.
+
+Return this JSON:
 {
-  "task_title": "A concise, action-oriented task title (under 60 chars)",
-  "task_description": "A detailed 2-3 sentence description of what the user needs to do and why it matters for the project",
-  "deliverable": "A specific, measurable output (e.g., '300-word introduction paragraph', '5-point argument outline', '2 paragraph lit review section')",
+  "task_title": "concise action-oriented title under 60 chars",
+  "task_description": "2-3 sentences describing what to do and why it matters",
+  "deliverable": "specific measurable output (e.g. 300-word introduction, 5-point outline)",
   "estimated_minutes": 30,
   "difficulty": "${difficulty}",
   "xp_reward": ${xpRewardMap[difficulty]},
-  "hints": [
-    "Specific hint 1 tailored to this project and task",
-    "Specific hint 2 tailored to this project and task",
-    "Specific hint 3 tailored to this project and task",
-    "Specific hint 4 tailored to this project and task"
-  ]
+  "hints": ["hint 1", "hint 2", "hint 3", "hint 4"]
 }`;
 
-  const result = await model.generateContent(prompt);
-  const responseText = result.response.text();
-  const jsonStr = extractJSON(responseText);
-  return JSON.parse(jsonStr);
+  return callJSON(system, user_prompt);
 }
 
 async function scoreSubmission(task, project, submissionText) {
-  const genAI = getClient();
-  const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+  const system = `You are an expert academic writing evaluator for a gamified productivity app. Score submissions fairly and constructively. Always respond with valid JSON only.
 
-  const prompt = `You are an expert academic writing evaluator for a gamified productivity app. Evaluate this writing submission fairly and constructively.
+IMPORTANT: If the submission is gibberish, random characters, nonsensical, or clearly not a genuine attempt, score ALL criteria between 0 and 20.`;
 
-IMPORTANT: If the submission is gibberish, nonsensical, random characters, or clearly not a genuine attempt, score ALL criteria between 0 and 20 regardless of difficulty level.
+  const user_prompt = `Score this writing submission.
 
-TASK INFORMATION:
-- Task Title: ${task.title}
-- Task Description: ${task.description}
-- Expected Deliverable: ${task.deliverable}
-- Difficulty Level: ${task.difficulty}
+TASK: ${task.title}
+DESCRIPTION: ${task.description}
+EXPECTED DELIVERABLE: ${task.deliverable}
+DIFFICULTY: ${task.difficulty}
 
-PROJECT CONTEXT:
-- Project: ${project.title}
-- Goal: ${project.goal || 'Not specified'}
-- Publication Venue: ${project.publication_venue || 'Not specified'}
+PROJECT: ${project.title} | Goal: ${project.goal || 'N/A'} | Publication: ${project.publication_venue || 'N/A'}
 
 SUBMISSION:
 """
 ${submissionText}
 """
 
-Evaluate the submission on three criteria, each scored 0-100:
+Score each criterion 0-100. For ${task.difficulty} difficulty: Bronze = 60-80 for decent work, Diamond = expect 80+ for strong work.
 
-1. GRAMMAR & WRITING QUALITY (0-100): Assess sentence structure, clarity, flow, vocabulary, grammar errors, and professional writing quality.
-
-2. IDEA QUALITY (0-100): Assess the depth of thinking, originality, relevance to the task, quality of arguments/insights, and intellectual contribution.
-
-3. EXECUTION (0-100): Assess how well the submission matches the deliverable requirements, completeness, adherence to the task instructions, and practical usefulness.
-
-Score leniently for ${task.difficulty} difficulty. For Bronze, scores of 60-80 are appropriate for decent work. For Diamond, be rigorous and expect 80+ for strong submissions.
-
-Respond ONLY with a valid JSON object (no markdown, no explanation):
+Return this JSON:
 {
-  "grammar_score": <integer 0-100>,
-  "grammar_feedback": "<1-2 sentence constructive feedback>",
-  "idea_score": <integer 0-100>,
-  "idea_feedback": "<1-2 sentence constructive feedback>",
-  "execution_score": <integer 0-100>,
-  "execution_feedback": "<1-2 sentence constructive feedback>"
+  "grammar_score": 0,
+  "grammar_feedback": "1-2 sentences of constructive feedback",
+  "idea_score": 0,
+  "idea_feedback": "1-2 sentences of constructive feedback",
+  "execution_score": 0,
+  "execution_feedback": "1-2 sentences of constructive feedback"
 }`;
 
-  const result = await model.generateContent(prompt);
-  const responseText = result.response.text();
-  const jsonStr = extractJSON(responseText);
-  return JSON.parse(jsonStr);
+  return callJSON(system, user_prompt);
 }
 
 async function generateRoadmap(project) {
-  const genAI = getClient();
-  const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+  const system = `You are a project planning expert for a gamified academic productivity app. Generate structured project roadmaps. Always respond with valid JSON only.`;
 
-  const prompt = `You are a project planning expert for a gamified academic productivity app called Productivity Nexus. Generate a structured project roadmap for the following research/writing project.
+  const user_prompt = `Generate a project roadmap for this research/writing project.
 
-PROJECT INFORMATION:
+PROJECT:
 - Title: ${project.title}
 - Goal: ${project.goal || 'Not specified'}
 - Type: ${project.type}
-- Publication Venue: ${project.publication_venue || 'Not specified'}
+- Publication: ${project.publication_venue || 'Not specified'}
 - Deadline: ${project.deadline || 'Not specified'}
-- Hours per Day Available: ${project.working_hours_per_day}
-- Outline/Context: ${project.outline || 'None provided'}
+- Hours/day: ${project.working_hours_per_day}
+- Outline: ${project.outline || 'None provided'}
 
-Generate a roadmap with 6-15 numbered steps depending on project scope. Each step should be a discrete, focused writing or research task completable in 25-60 minutes. Steps should progress logically from early research/brainstorming through drafting, revision, and polish.
+Generate 6-15 numbered steps depending on scope. Each step = a discrete focused task (25-60 min). Steps should progress logically: research → writing → review → polish.
 
-Phases available: research, writing, review, polish
+Phases: research, writing, review, polish
 
-Respond ONLY with a valid JSON object (no markdown, no explanation):
+Return this JSON:
 {
   "steps": [
     {
       "stepNumber": 1,
-      "title": "Step title (under 60 chars)",
-      "description": "2-3 sentence description of what this step involves and why it matters",
-      "deliverable": "Specific measurable output for this step",
+      "title": "step title under 60 chars",
+      "description": "2-3 sentences describing this step",
+      "deliverable": "specific measurable output",
       "estimatedMinutes": 30,
       "phase": "research"
     }
   ]
 }`;
 
-  const result = await model.generateContent(prompt);
-  const responseText = result.response.text();
-  const jsonStr = extractJSON(responseText);
-  return JSON.parse(jsonStr);
+  return callJSON(system, user_prompt);
+}
+
+async function chatWithAI(messages) {
+  const client = getClient();
+
+  const systemPrompt = `You are a helpful AI assistant embedded in Productivity Nexus, a gamified productivity app for researchers, academics, and writers. You help users with:
+- Research strategies and methodology
+- Academic writing, structure, and argumentation
+- Brainstorming ideas for papers and projects
+- Explaining complex concepts clearly
+- Suggesting sources, search strategies, and databases
+- Reviewing and improving writing
+- Breaking down large projects into manageable steps
+
+Keep responses concise, practical, and encouraging. Use markdown formatting when helpful.`;
+
+  const history = messages.map((m) => ({
+    role: m.role === 'assistant' ? 'assistant' : 'user',
+    content: m.content,
+  }));
+
+  const res = await client.chat.completions.create({
+    model: MODEL,
+    messages: [{ role: 'system', content: systemPrompt }, ...history],
+    temperature: 0.8,
+    max_tokens: 1024,
+  });
+
+  return res.choices[0].message.content;
 }
 
 async function testConnection() {
-  const genAI = getClient();
-  const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
-  const result = await model.generateContent('Reply with exactly: OK');
-  return result.response.text().trim();
+  const client = getClient();
+  const res = await client.chat.completions.create({
+    model: MODEL,
+    messages: [{ role: 'user', content: 'Reply with exactly the word: OK' }],
+    max_tokens: 10,
+  });
+  return res.choices[0].message.content.trim();
 }
 
-module.exports = { generateTask, scoreSubmission, generateRoadmap, testConnection };
+module.exports = { generateTask, scoreSubmission, generateRoadmap, chatWithAI, testConnection };

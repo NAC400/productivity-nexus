@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { API_BASE } from '../App';
 import { useSettings } from '../hooks/useSettings';
 
@@ -65,9 +65,25 @@ function AIChat() {
     setError('');
   }
 
+  const [retryCountdown, setRetryCountdown] = useState(0);
+  const countdownRef = useRef(null);
+
+  const startCountdown = useCallback((seconds) => {
+    setRetryCountdown(seconds);
+    clearInterval(countdownRef.current);
+    countdownRef.current = setInterval(() => {
+      setRetryCountdown((prev) => {
+        if (prev <= 1) { clearInterval(countdownRef.current); return 0; }
+        return prev - 1;
+      });
+    }, 1000);
+  }, []);
+
+  useEffect(() => () => clearInterval(countdownRef.current), []);
+
   async function handleSend() {
     const text = input.trim();
-    if (!text || loading) return;
+    if (!text || loading || retryCountdown > 0) return;
 
     play('click');
     setInput('');
@@ -85,17 +101,21 @@ function AIChat() {
         body: JSON.stringify({ messages: nextMessages }),
       });
       const data = await res.json();
+
+      if (res.status === 429) {
+        const waitMsg = data.error || 'Rate limit reached — please wait before retrying.';
+        if (data.retryAfter) startCountdown(data.retryAfter);
+        setError(waitMsg);
+        setMessages((prev) => [...prev, { role: 'assistant', content: `⏳ ${waitMsg}` }]);
+        return;
+      }
+
       if (!res.ok) throw new Error(data.error || 'AI chat failed');
       setMessages((prev) => [...prev, { role: 'assistant', content: data.reply }]);
     } catch (err) {
-      setError(err.message);
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: 'assistant',
-          content: `Error: ${err.message}\n\nMake sure your GEMINI_API_KEY is set in the .env file.`,
-        },
-      ]);
+      const msg = err.message || 'Connection error';
+      setError(msg);
+      setMessages((prev) => [...prev, { role: 'assistant', content: `❌ ${msg}` }]);
     } finally {
       setLoading(false);
     }
@@ -247,10 +267,10 @@ function AIChat() {
                 />
                 <button
                   onClick={handleSend}
-                  disabled={loading || !input.trim()}
-                  className="px-3 py-2 bg-nexus-accent/10 border border-nexus-accent text-nexus-accent hover:bg-nexus-accent/20 font-game text-xs tracking-wider rounded transition-all disabled:opacity-40 disabled:cursor-not-allowed self-end"
+                  disabled={loading || !input.trim() || retryCountdown > 0}
+                  className="px-3 py-2 bg-nexus-accent/10 border border-nexus-accent text-nexus-accent hover:bg-nexus-accent/20 font-game text-xs tracking-wider rounded transition-all disabled:opacity-40 disabled:cursor-not-allowed self-end min-w-[56px] text-center"
                 >
-                  SEND
+                  {retryCountdown > 0 ? `${retryCountdown}s` : 'SEND'}
                 </button>
               </div>
             </div>
