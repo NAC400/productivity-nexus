@@ -1,0 +1,40 @@
+# Dependencies
+node_modules/
+
+# Environment variables (keep secrets out of git)
+.env
+
+# Local database (stored in user home dir anyway, but just in case)
+*.db
+*.db-shm
+*.db-wal
+
+# Electron build output
+dist/
+dist-electron/
+release/
+out/
+
+# Vite build cache
+.vite/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor
+.vscode/settings.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+
+# Temporary
+*.tmp
+*.temp
